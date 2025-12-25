@@ -15,6 +15,7 @@ export interface PromptDefinition {
   description: string;
   systemInstruction: string;
   userPrompt: string;
+  model: string;
 }
 
 export interface TranscriptionRecord {
