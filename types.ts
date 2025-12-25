@@ -18,11 +18,16 @@ export interface PromptDefinition {
   model: string;
 }
 
-export interface TranscriptionRecord {
+export interface Case {
   id: string;
+  title: string;
   timestamp: number;
-  rawText: string;
-  processedText: string;
-  editedText: string;
-  type: PromptType;
+  inputText: string;
+  outputText: string;
+  currentPromptType: PromptType;
+  isVerified: boolean;
+  audioInfo?: {
+    fileName: string;
+    duration?: number;
+  };
 }

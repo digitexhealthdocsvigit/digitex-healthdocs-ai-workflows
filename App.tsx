@@ -1,46 +1,130 @@
 
-import React, { useState, useEffect } from 'react';
-import { PromptType } from './types';
+import React, { useState, useEffect, useRef } from 'react';
+import { PromptType, Case } from './types';
 import { PROMPTS } from './constants';
 import { geminiService } from './geminiService';
 
 const App: React.FC = () => {
-  // Load initial state from LocalStorage
-  const [selectedPrompt, setSelectedPrompt] = useState<PromptType>(() => {
-    const saved = localStorage.getItem('hd_selected_prompt');
-    return (saved as PromptType) || PromptType.CLEANUP;
+  // --- Case Management State ---
+  const [cases, setCases] = useState<Case[]>(() => {
+    const saved = localStorage.getItem('hd_cases');
+    return saved ? JSON.parse(saved) : [];
   });
-  
-  const [inputText, setInputText] = useState(() => localStorage.getItem('hd_input_text') || '');
-  const [outputText, setOutputText] = useState(() => localStorage.getItem('hd_output_text') || '');
+  const [activeCaseId, setActiveCaseId] = useState<string | null>(() => localStorage.getItem('hd_active_case_id'));
+
+  // --- UI State ---
+  const [selectedPrompt, setSelectedPrompt] = useState<PromptType>(PromptType.CLEANUP);
+  const [inputText, setInputText] = useState('');
+  const [outputText, setOutputText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isVerified, setIsVerified] = useState(() => localStorage.getItem('hd_is_verified') === 'true');
-  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [isVerified, setIsVerified] = useState(false);
   const [zoomLevel, setZoomLevel] = useState<'normal' | 'large' | 'xl'>(() => 
     (localStorage.getItem('hd_zoom_level') as 'normal' | 'large' | 'xl') || 'normal'
   );
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('hd_dark_mode') === 'true');
+  const [showHistory, setShowHistory] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
 
-  // Persistence Effects
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- Sync Active Case ---
   useEffect(() => {
-    localStorage.setItem('hd_selected_prompt', selectedPrompt);
-    localStorage.setItem('hd_input_text', inputText);
-    localStorage.setItem('hd_output_text', outputText);
-    localStorage.setItem('hd_is_verified', String(isVerified));
+    if (activeCaseId) {
+      const activeCase = cases.find(c => c.id === activeCaseId);
+      if (activeCase) {
+        setInputText(activeCase.inputText);
+        setOutputText(activeCase.outputText);
+        setSelectedPrompt(activeCase.currentPromptType);
+        setIsVerified(activeCase.isVerified);
+      }
+    }
+  }, [activeCaseId]);
+
+  // --- Persistence ---
+  useEffect(() => {
+    localStorage.setItem('hd_cases', JSON.stringify(cases));
+    localStorage.setItem('hd_active_case_id', activeCaseId || '');
     localStorage.setItem('hd_zoom_level', zoomLevel);
     localStorage.setItem('hd_dark_mode', String(isDarkMode));
-    
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [selectedPrompt, inputText, outputText, isVerified, zoomLevel, isDarkMode]);
+    document.documentElement.classList.toggle('dark', isDarkMode);
+  }, [cases, activeCaseId, zoomLevel, isDarkMode]);
 
-  // Reset verification when output changes manually
+  // --- Auto-save current case data ---
   useEffect(() => {
-    if (!isProcessing) setIsVerified(false);
-  }, [outputText, selectedPrompt]);
+    if (activeCaseId) {
+      setCases(prev => prev.map(c => 
+        c.id === activeCaseId 
+        ? { ...c, inputText, outputText, currentPromptType: selectedPrompt, isVerified, timestamp: Date.now() } 
+        : c
+      ));
+    }
+  }, [inputText, outputText, selectedPrompt, isVerified]);
+
+  const createNewCase = () => {
+    const newCase: Case = {
+      id: crypto.randomUUID(),
+      title: `Case #${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+      timestamp: Date.now(),
+      inputText: '',
+      outputText: '',
+      currentPromptType: PromptType.CLEANUP,
+      isVerified: false
+    };
+    setCases(prev => [newCase, ...prev]);
+    setActiveCaseId(newCase.id);
+    setShowHistory(false);
+  };
+
+  const deleteCase = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm("Delete this case history?")) {
+      setCases(prev => prev.filter(c => c.id !== id));
+      if (activeCaseId === id) {
+        setActiveCaseId(null);
+        setInputText('');
+        setOutputText('');
+      }
+    }
+  };
+
+  const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!activeCaseId) createNewCase();
+
+    setIsProcessing(true);
+    setOutputText('');
+    
+    try {
+      const base64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.readAsDataURL(file);
+      });
+
+      const promptDef = PROMPTS[PromptType.CLEANUP];
+      const stream = geminiService.streamTranscription(promptDef, `Transcribing audio file: ${file.name}`, {
+        data: base64,
+        mimeType: file.type
+      });
+
+      let fullText = '';
+      for await (const chunk of stream) {
+        fullText += chunk;
+        setOutputText(fullText);
+      }
+      
+      setCases(prev => prev.map(c => 
+        c.id === activeCaseId ? { ...c, title: file.name.split('.')[0] } : c
+      ));
+
+    } catch (error) {
+      setOutputText("ERROR: Audio transcription failed. Please check file format or API limits.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const runWorkflow = async () => {
     if (!inputText.trim()) return;
@@ -57,306 +141,216 @@ const App: React.FC = () => {
         setOutputText(fullText);
       }
     } catch (error) {
-      setOutputText("ERROR: Transcription service failed. Ensure API key is valid.");
+      setOutputText("ERROR: Inference failed. Check connectivity.");
     } finally {
       setIsProcessing(false);
     }
   };
 
   const pushToNext = () => {
-    if (!outputText || !isVerified) {
-      alert("Compliance Warning: Mandatory Human Review required before proceeding.");
-      return;
-    }
+    if (!isVerified) return alert("Human Review Required.");
     const currentOrder = Object.keys(PROMPTS) as PromptType[];
-    const currentIndex = currentOrder.indexOf(selectedPrompt);
-    const nextPromptKey = currentOrder[currentIndex + 1];
-    
+    const nextPromptKey = currentOrder[currentOrder.indexOf(selectedPrompt) + 1];
     if (nextPromptKey) {
       setInputText(outputText);
       setOutputText('');
       setSelectedPrompt(nextPromptKey);
       setIsVerified(false);
-    } else {
-      alert("Workflow Complete.");
     }
   };
 
-  const copyToClipboard = (text: string, label: string) => {
-    if (label === 'output' && !isVerified) {
-      alert("Compliance Warning: You must mark this clinical draft as 'Verified' before copying.");
-      return;
-    }
+  const copyToClipboard = (text: string) => {
+    if (!isVerified) return alert("Verify before copying.");
     navigator.clipboard.writeText(text);
-    setCopyStatus(label);
+    setCopyStatus('copied');
     setTimeout(() => setCopyStatus(null), 2000);
   };
 
-  const getFontSizeClass = () => {
-    switch(zoomLevel) {
-      case 'large': return 'text-[18px]';
-      case 'xl': return 'text-[20px]';
-      default: return 'text-[16px]';
-    }
-  };
+  const getFontSizeClass = () => zoomLevel === 'xl' ? 'text-[20px]' : zoomLevel === 'large' ? 'text-[18px]' : 'text-[16px]';
 
   return (
-    <div className={`flex flex-col h-screen overflow-hidden font-inter transition-colors duration-300 ${isDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'} selection:bg-indigo-500/20`}>
-      {/* Top Header */}
-      <header className={`h-16 border-b px-6 flex items-center justify-between shrink-0 shadow-sm z-10 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+    <div className={`flex flex-col h-screen overflow-hidden font-inter transition-colors duration-300 ${isDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+      {/* Header */}
+      <header className={`h-16 border-b px-6 flex items-center justify-between shrink-0 shadow-sm z-30 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-indigo-500/20 shadow-xl">
+          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg">
             <svg viewBox="0 0 24 24" className="w-6 h-6 text-white fill-current"><path d="M19,3H5C3.89,3 3,3.9 3,5V19C3,20.1 3.89,21 5,21H19C20.11,21 21,20.1 21,19V5C21,3.9 20.11,3 19,3M19,19H5V5H19V19M11,7H13V11H17V13H13V17H11V13H7V11H11V7Z"/></svg>
           </div>
-          <div>
-            <h1 className={`text-lg font-bold tracking-tight leading-none mb-1 ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>Digitex HealthDocs</h1>
-            <p className="text-[10px] text-indigo-500 font-black uppercase tracking-[0.2em]">Clinical Workspace</p>
+          <div className="hidden sm:block">
+            <h1 className="text-lg font-bold tracking-tight leading-none mb-1">Digitex HealthDocs</h1>
+            <p className="text-[10px] text-indigo-500 font-black uppercase tracking-widest">Workspace v2.0</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-6">
-          {/* Zoom Controls */}
-          <div className={`flex items-center gap-1 p-1 rounded-lg border ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'}`}>
-            {(['normal', 'large', 'xl'] as const).map(level => (
-              <button 
-                key={level}
-                onClick={() => setZoomLevel(level)}
-                className={`px-3 py-1 text-[10px] font-black uppercase rounded transition-all ${zoomLevel === level ? (isDarkMode ? 'bg-indigo-600 text-white shadow-lg' : 'bg-white text-indigo-600 shadow-sm') : 'text-slate-400 hover:text-slate-200'}`}
-              >
-                {level}
-              </button>
-            ))}
-          </div>
-
-          <div className={`h-8 w-px ${isDarkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
-
-          {/* Theme Toggle */}
+        <div className="flex items-center gap-4">
           <button 
-            onClick={() => setIsDarkMode(!isDarkMode)}
-            className={`p-2 rounded-xl border transition-all ${isDarkMode ? 'bg-slate-800 border-slate-700 text-amber-400' : 'bg-slate-100 border-slate-200 text-slate-600'}`}
-            title="Toggle Dark Mode"
+            onClick={() => setShowHistory(!showHistory)}
+            className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${showHistory ? 'bg-indigo-600 text-white border-indigo-600' : (isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200')}`}
           >
-            {isDarkMode ? (
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"/></svg>
-            ) : (
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"/></svg>
-            )}
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            Case History ({cases.length})
+          </button>
+          <div className={`h-6 w-px ${isDarkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
+          <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 rounded-lg border border-transparent hover:border-slate-700 transition-all">
+            {isDarkMode ? '🌙' : '☀️'}
           </button>
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Workflow Sidebar */}
-        <aside className={`w-72 border-r flex flex-col p-6 shrink-0 transition-colors ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-[4px_0_24px_-10px_rgba(0,0,0,0.4)]' : 'bg-white border-slate-200 shadow-[4px_0_24px_-10px_rgba(0,0,0,0.05)]'}`}>
-          <h3 className="text-[11px] font-black text-slate-500 uppercase tracking-[0.15em] mb-5">Workflow Pipeline</h3>
-          <nav className="flex-1 flex flex-col gap-2 overflow-y-auto pr-2 custom-scrollbar">
-            {Object.values(PROMPTS).map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setSelectedPrompt(p.id)}
-                disabled={isProcessing}
-                className={`group text-left px-5 py-4 rounded-2xl transition-all border ${
-                  selectedPrompt === p.id
-                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-500/20'
-                    : (isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-indigo-500/50 text-slate-300' : 'bg-white border-slate-100 hover:border-indigo-200 hover:bg-indigo-50/50 text-slate-600')
-                }`}
-              >
-                <div className={`text-sm font-bold mb-1 ${selectedPrompt === p.id ? 'text-white' : (isDarkMode ? 'text-slate-100' : 'text-slate-900')}`}>
-                  {p.label}
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* History Overlay Drawer */}
+        <aside className={`absolute left-0 top-0 h-full w-80 z-20 transition-transform duration-500 transform border-r ${showHistory ? 'translate-x-0' : '-translate-x-full'} ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-2xl' : 'bg-white border-slate-200 shadow-2xl'}`}>
+          <div className="p-6 h-full flex flex-col">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xs font-black uppercase tracking-widest text-slate-500">History Log</h3>
+              <button onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-red-500">✕</button>
+            </div>
+            <button 
+              onClick={createNewCase}
+              className="w-full py-4 mb-4 rounded-2xl bg-indigo-600 text-white text-xs font-black uppercase tracking-widest shadow-xl shadow-indigo-500/20 hover:bg-indigo-700 transition-all"
+            >
+              + New Transcription Job
+            </button>
+            <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 flex flex-col gap-2">
+              {cases.map(c => (
+                <div 
+                  key={c.id} 
+                  onClick={() => { setActiveCaseId(c.id); setShowHistory(false); }}
+                  className={`p-4 rounded-2xl border cursor-pointer transition-all relative group ${activeCaseId === c.id ? (isDarkMode ? 'bg-indigo-900/20 border-indigo-500/50' : 'bg-indigo-50 border-indigo-200') : (isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-slate-500' : 'bg-slate-50 border-slate-100 hover:border-slate-200')}`}
+                >
+                  <div className="text-xs font-bold truncate pr-6 mb-1">{c.title}</div>
+                  <div className="text-[10px] text-slate-500 flex justify-between items-center">
+                    <span>{new Date(c.timestamp).toLocaleDateString()}</span>
+                    <span className="bg-indigo-100 text-indigo-600 px-1.5 rounded uppercase font-black tracking-tighter">{Object.keys(PROMPTS).indexOf(c.currentPromptType) + 1}/7</span>
+                  </div>
+                  <button onClick={(e) => deleteCase(c.id, e)} className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition-opacity">✕</button>
                 </div>
-                <div className={`text-[11px] leading-snug line-clamp-2 font-medium ${selectedPrompt === p.id ? 'text-indigo-100' : 'text-slate-500'}`}>
-                  {p.description}
-                </div>
-              </button>
-            ))}
-          </nav>
-
-          <div className={`mt-8 pt-6 border-t ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>
-             <div className={`${isDarkMode ? 'bg-slate-950 border border-slate-800' : 'bg-slate-900'} rounded-3xl p-5 shadow-2xl`}>
-                <p className="text-[9px] text-slate-500 font-black uppercase mb-3 tracking-widest">Inference Engine</p>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-[10px] text-indigo-400 font-mono font-bold">GEMINI AI</span>
-                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full uppercase tracking-tighter ${isDarkMode ? 'text-indigo-400 bg-indigo-500/10' : 'text-white bg-indigo-500/20 border border-indigo-500/30'}`}>
-                    {PROMPTS[selectedPrompt].model.split('-')[2]}
-                  </span>
-                </div>
-                <div className={`h-1.5 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-slate-800'}`}>
-                  <div className={`h-full bg-indigo-500 transition-all duration-700 ${isProcessing ? 'w-full animate-[shimmer_1.5s_infinite]' : 'w-0'}`}></div>
-                </div>
-             </div>
+              ))}
+            </div>
           </div>
         </aside>
 
+        {/* Stages Sidebar */}
+        <nav className={`w-16 flex flex-col items-center py-6 gap-4 border-r shrink-0 z-10 transition-colors ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+          {Object.values(PROMPTS).map((p, idx) => (
+            <button
+              key={p.id}
+              onClick={() => setSelectedPrompt(p.id)}
+              className={`w-10 h-10 rounded-xl text-xs font-black transition-all flex items-center justify-center border ${selectedPrompt === p.id ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg' : (isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-500' : 'bg-slate-50 border-slate-100 text-slate-400 hover:border-indigo-200')}`}
+              title={p.label}
+            >
+              {idx + 1}
+            </button>
+          ))}
+        </nav>
+
         {/* Workspace */}
-        <main className={`flex-1 flex flex-col relative overflow-hidden transition-colors ${isDarkMode ? 'bg-slate-950' : 'bg-slate-50'}`}>
-          {/* Main Action Bar */}
-          <div className={`h-16 border-b px-8 flex items-center justify-between shrink-0 ${isDarkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200'}`}>
+        <main className="flex-1 flex flex-col overflow-hidden">
+          {/* Action Bar */}
+          <div className={`h-16 px-8 flex items-center justify-between border-b shrink-0 ${isDarkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-200'}`}>
             <div className="flex items-center gap-4">
-              <span className={`px-3 py-1 text-[11px] font-black rounded-lg uppercase border tracking-[0.1em] ${isDarkMode ? 'bg-indigo-900/20 text-indigo-400 border-indigo-500/20' : 'bg-indigo-50 text-indigo-700 border-indigo-100'}`}>
-                Workflow Stage {Object.keys(PROMPTS).indexOf(selectedPrompt) + 1}
-              </span>
-              <h2 className={`text-base font-bold tracking-tight ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}>{PROMPTS[selectedPrompt].label.split('. ')[1]}</h2>
+              <span className="text-[10px] font-black uppercase tracking-widest text-indigo-500">{PROMPTS[selectedPrompt].label}</span>
+              <div className={`h-4 w-px ${isDarkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
+              <input 
+                type="text" 
+                value={cases.find(c => c.id === activeCaseId)?.title || 'Untitled Case'} 
+                onChange={(e) => {
+                  const newTitle = e.target.value;
+                  setCases(prev => prev.map(c => c.id === activeCaseId ? { ...c, title: newTitle } : c));
+                }}
+                className={`bg-transparent text-sm font-bold outline-none border-b border-transparent focus:border-indigo-500 transition-all ${isDarkMode ? 'text-slate-100' : 'text-slate-900'}`}
+              />
             </div>
             
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
               <button 
-                onClick={() => { if(confirm("Clear current work?")) { setInputText(''); setOutputText(''); setIsVerified(false); }}}
-                className="text-[11px] font-black text-slate-500 hover:text-red-500 px-4 py-2 transition-colors uppercase tracking-widest"
-              >
-                Clear
-              </button>
-              <button
-                onClick={runWorkflow}
+                onClick={runWorkflow} 
                 disabled={isProcessing || !inputText.trim()}
-                className={`px-8 py-3 rounded-2xl text-xs font-black uppercase tracking-widest flex items-center gap-3 transition-all ${
-                  isProcessing || !inputText.trim()
-                    ? 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-50'
-                    : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95 shadow-xl shadow-indigo-500/20'
-                }`}
+                className={`px-6 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${isProcessing || !inputText.trim() ? 'opacity-50 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md'}`}
               >
-                {isProcessing ? (
-                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> Running...</>
-                ) : (
-                  <><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Run Workflow</>
-                )}
+                {isProcessing ? 'Processing...' : 'Run Analysis'}
               </button>
             </div>
           </div>
 
-          <div className="flex-1 p-8 grid grid-cols-[minmax(0,45fr)_minmax(0,55fr)] gap-8 overflow-hidden">
-            
-            {/* Input Panel */}
-            <div className="flex flex-col gap-4 group h-full overflow-hidden">
-              <div className="flex items-center justify-between px-2">
-                <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-slate-500"></span>
-                  Source Dictation
-                </label>
-                <div className={`text-[10px] font-bold px-2 py-0.5 rounded ${isDarkMode ? 'bg-slate-800 text-slate-400' : 'bg-slate-100 text-slate-400'}`}>CHARS: {inputText.length}</div>
-              </div>
-              <div className={`flex-1 border rounded-[2rem] shadow-sm relative overflow-hidden focus-within:ring-4 focus-within:ring-indigo-500/10 transition-all ${isDarkMode ? 'bg-slate-900 border-slate-800 focus-within:border-indigo-500/50' : 'bg-white border-slate-200 focus-within:border-indigo-300'}`}>
-                <textarea
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder="Paste medical dictation draft here..."
-                  className={`absolute inset-0 w-full h-full p-8 font-inter leading-relaxed bg-transparent resize-none outline-none placeholder:text-slate-600 font-medium custom-scrollbar ${isDarkMode ? 'text-slate-200' : 'text-slate-800'} ${getFontSizeClass()}`}
-                />
-              </div>
-            </div>
-
-            {/* Output Panel */}
-            <div className="flex flex-col gap-4 group h-full overflow-hidden">
-              <div className="flex items-center justify-between px-2">
-                <label className="text-[11px] font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-                  Augmented Result
-                </label>
-                {outputText && (
+          <div className="flex-1 grid grid-cols-2 gap-px bg-slate-200 overflow-hidden dark:bg-slate-800">
+            {/* Input Side */}
+            <div className={`flex flex-col p-8 transition-colors ${isDarkMode ? 'bg-slate-950' : 'bg-white'}`}>
+              <div className="flex items-center justify-between mb-4">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Source Input</label>
+                {selectedPrompt === PromptType.CLEANUP && (
                   <button 
-                    onClick={pushToNext}
-                    className={`text-[10px] font-black px-4 py-1.5 rounded-full transition-all border uppercase tracking-widest ${
-                      isVerified 
-                      ? (isDarkMode ? 'text-indigo-400 bg-indigo-500/10 border-indigo-500/30 hover:bg-indigo-500/20 shadow-sm' : 'text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100 shadow-sm') 
-                      : (isDarkMode ? 'text-slate-600 bg-slate-900 border-slate-800 cursor-not-allowed' : 'text-slate-400 bg-slate-50 border-slate-100 cursor-not-allowed')
-                    }`}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-[10px] font-black uppercase text-indigo-500 flex items-center gap-1 hover:text-indigo-600"
                   >
-                    Proceed Stage →
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
+                    Upload Medical Audio
                   </button>
                 )}
+                <input ref={fileInputRef} type="file" accept="audio/*" onChange={handleAudioUpload} className="hidden" />
+              </div>
+              <textarea
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder="Paste raw text or upload clinical audio..."
+                className={`flex-1 w-full bg-transparent resize-none outline-none font-inter leading-relaxed custom-scrollbar ${getFontSizeClass()} ${isDarkMode ? 'text-slate-200' : 'text-slate-800'}`}
+              />
+            </div>
+
+            {/* Output Side */}
+            <div className={`flex flex-col p-8 transition-colors ${isDarkMode ? 'bg-slate-900/30' : 'bg-slate-50/50'}`}>
+              <div className="flex items-center justify-between mb-4">
+                <label className="text-[10px] font-black uppercase tracking-widest text-indigo-500">Processed Document</label>
+                <div className="flex items-center gap-4">
+                   <div className="flex items-center gap-1 bg-slate-200/50 p-0.5 rounded-lg dark:bg-slate-800">
+                      {(['normal', 'large', 'xl'] as const).map(z => (
+                        <button key={z} onClick={() => setZoomLevel(z)} className={`px-2 py-0.5 text-[9px] font-bold uppercase rounded ${zoomLevel === z ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>{z}</button>
+                      ))}
+                   </div>
+                </div>
               </div>
               
-              <div className={`flex-1 flex flex-col border rounded-[2rem] shadow-sm overflow-hidden relative transition-all ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
-                <div className={`flex-1 p-8 overflow-y-auto custom-scrollbar transition-colors ${isDarkMode ? 'bg-slate-950/40' : 'bg-[#fafafa]'} ${isProcessing ? 'opacity-50' : ''}`}>
-                  {!outputText && !isProcessing ? (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-500 gap-6 opacity-40">
-                      <svg className="w-20 h-20" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
-                      <p className="text-[12px] font-black uppercase tracking-[0.2em] text-center">Awaiting AI Inference</p>
-                    </div>
-                  ) : (
-                    <div className={`font-serif-clinical leading-[1.65] ${isDarkMode ? 'text-slate-300' : 'text-slate-800'} ${getFontSizeClass()}`}>
-                      {outputText.split('\n').map((line, idx) => {
-                        const trimmedLine = line.trim();
-                        const isHeader = trimmedLine.length > 3 && (
-                          trimmedLine === trimmedLine.toUpperCase() || 
-                          /^(patient|chief|history|medications|allergies|physical|investigations|assessment|treatment|follow|impression|examination|technique|findings):/i.test(trimmedLine)
-                        );
-                        const isRisk = line.includes('[UNSURE') || line.toLowerCase().includes('verify') || selectedPrompt === PromptType.ERROR_FLAGGING;
-                        
-                        if (isHeader) {
-                          return (
-                            <h3 key={idx} className={`font-inter font-bold border-b pb-1 mb-4 mt-8 first:mt-0 sticky top-0 z-[5] text-[1.15em] uppercase tracking-wide transition-colors ${isDarkMode ? 'text-indigo-400 border-slate-800 bg-slate-950' : 'text-slate-900 border-slate-200 bg-[#fafafa]'}`}>
-                              {trimmedLine}
-                            </h3>
-                          );
-                        }
-                        if (isRisk) {
-                          return (
-                            <div key={idx} className={`px-4 py-2 rounded-xl my-3 border-l-4 font-bold shadow-sm transition-all ${isDarkMode ? 'bg-amber-900/20 text-amber-400 border-amber-600' : 'bg-amber-100/60 text-amber-900 border-amber-500 hover:bg-amber-100'}`}>
-                              {line}
-                            </div>
-                          );
-                        }
-                        return <p key={idx} className="mb-4">{line || '\u00A0'}</p>;
-                      })}
-                    </div>
-                  )}
-                </div>
+              <div className={`flex-1 overflow-y-auto custom-scrollbar font-serif-clinical leading-relaxed ${getFontSizeClass()} ${isDarkMode ? 'text-slate-300' : 'text-slate-800'}`}>
+                {outputText.split('\n').map((line, i) => {
+                  const isHeader = line.length > 3 && (line === line.toUpperCase() || /^[A-Z][a-z]+(\s[A-Z][a-z]+)*:/.test(line));
+                  const isRisk = line.includes('[UNSURE');
+                  return (
+                    <p key={i} className={`mb-4 ${isHeader ? 'font-inter font-bold text-indigo-500 uppercase text-[0.8em] border-b border-indigo-500/10 pb-1 mt-6 first:mt-0' : ''} ${isRisk ? 'bg-amber-100/30 text-amber-600 px-3 py-1 rounded border-l-2 border-amber-500 italic' : ''}`}>
+                      {line || '\u00A0'}
+                    </p>
+                  );
+                })}
+              </div>
 
-                {/* Footer Actions */}
-                {outputText && (
-                  <div className={`p-6 border-t flex items-center justify-between shrink-0 ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
-                    <div className="flex items-center gap-4">
-                      <label className="relative inline-flex items-center cursor-pointer group">
-                        <input type="checkbox" checked={isVerified} onChange={(e) => setIsVerified(e.target.checked)} className="sr-only peer" />
-                        <div className={`w-11 h-6 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600 shadow-inner ${isDarkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
-                        <span className={`ml-4 text-[11px] font-black uppercase tracking-widest transition-colors ${isVerified ? 'text-green-500' : 'text-slate-500'}`}>
-                          {isVerified ? 'Verified' : 'Human Review'}
-                        </span>
-                      </label>
-                    </div>
-                    
-                    <button 
-                      onClick={() => copyToClipboard(outputText, 'output')}
-                      className={`px-8 py-3 rounded-2xl text-[12px] font-black uppercase tracking-widest transition-all shadow-lg ${
-                        isVerified 
-                        ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-500/20' 
-                        : (isDarkMode ? 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700' : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200 shadow-none')
-                      }`}
-                    >
-                      {copyStatus === 'output' ? '✓ Ready' : 'Copy Draft'}
+              {outputText && (
+                <div className="mt-8 flex items-center justify-between pt-6 border-t border-slate-200 dark:border-slate-800">
+                  <button 
+                    onClick={() => setIsVerified(!isVerified)} 
+                    className={`flex items-center gap-3 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isVerified ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-slate-100 text-slate-400 border border-slate-200'}`}
+                  >
+                    <div className={`w-3 h-3 rounded-full ${isVerified ? 'bg-green-600' : 'bg-slate-400'}`}></div>
+                    {isVerified ? 'Verified' : 'Human Review'}
+                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={() => copyToClipboard(outputText)} className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${isVerified ? 'bg-slate-900 text-white hover:bg-black' : 'opacity-30 cursor-not-allowed'}`}>
+                      {copyStatus ? 'Copied!' : 'Copy'}
+                    </button>
+                    <button onClick={pushToNext} className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${isVerified ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'opacity-30 cursor-not-allowed'}`}>
+                      Next Stage →
                     </button>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
         </main>
       </div>
 
-      {/* Compliance Footer */}
-      <footer className="h-10 bg-slate-900 border-t border-slate-800 flex items-center justify-between px-8 shrink-0 z-20">
-        <div className="flex items-center gap-8">
-           <div className="flex items-center gap-2">
-             <span className="w-2 h-2 rounded-full bg-slate-600"></span>
-             <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Internal Workspace</span>
-           </div>
-           <div className="text-[10px] text-slate-700 font-mono select-none">GST: 27AAAPP9753F2ZF</div>
-        </div>
-        <div className="flex items-center gap-6">
-          <span className="text-[10px] font-black text-amber-500 uppercase tracking-[0.15em] animate-pulse flex items-center gap-2">
-             <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd"/></svg>
-             Mandatory Review
-          </span>
-          <span className="text-[10px] text-slate-600 font-bold">&copy; {new Date().getFullYear()} Digitex Studio</span>
-        </div>
-      </footer>
-
       <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 12px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #64748b; }
-        @keyframes shimmer { 0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; } }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #6366f133; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #6366f166; }
       `}</style>
     </div>
   );

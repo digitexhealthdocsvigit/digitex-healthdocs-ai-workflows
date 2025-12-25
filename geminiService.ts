@@ -9,14 +9,27 @@ export class GeminiTranscriptionService {
     return new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
   }
 
-  async *streamTranscription(prompt: PromptDefinition, text: string) {
-    if (!text.trim()) return;
+  async *streamTranscription(prompt: PromptDefinition, text: string, audioData?: { data: string, mimeType: string }) {
     const ai = this.getAI();
+    
+    // Use the native audio model for the first pass if audio is provided
+    const modelName = audioData ? 'gemini-2.5-flash-native-audio-preview-09-2025' : prompt.model;
 
     try {
+      const parts: any[] = [{ text: `${prompt.userPrompt}\n\nTEXT TO PROCESS:\n${text}` }];
+      
+      if (audioData) {
+        parts.unshift({
+          inlineData: {
+            data: audioData.data,
+            mimeType: audioData.mimeType
+          }
+        });
+      }
+
       const responseStream = await ai.models.generateContentStream({
-        model: prompt.model,
-        contents: `${prompt.userPrompt}\n\nTEXT:\n${text}`,
+        model: modelName,
+        contents: { parts },
         config: {
           systemInstruction: prompt.systemInstruction,
           temperature: 0.1,
