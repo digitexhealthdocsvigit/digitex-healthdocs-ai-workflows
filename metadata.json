@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Digitex HealthDocs Assistant",
+  "description": "A professional medical transcription editing and formatting workspace for Digitex HealthDocs, powered by Gemini AI. Designed for internal clinical document preparation with human-in-the-loop validation.",
+  "requestFramePermissions": []
+}
