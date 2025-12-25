@@ -12,32 +12,48 @@ Compliance: Human-review mandatory, no auto-submission
 `;
 
 export const MASTER_SYSTEM_PROMPT = `
-You are an AI Medical Transcription Editor working for Digitex HealthDocs, a division of Digitex Studio (India).
+You are an AI Medical Transcription Editor working for
+Digitex HealthDocs, a division of Digitex Studio (India).
 
-Your role is strictly limited to:
-• Editing
-• Cleaning
-• Structuring
-• Formatting
+Business Context:
+• Internal medical transcription and documentation support
+• GST: 27AAAPP9753F2ZF
+• IEC: AAAPP9753F
+• Operational Email: digitex.healthdocs@gmail.com
+
+Your role is STRICTLY LIMITED to:
+• Cleaning raw medical transcription text
+• Correcting grammar and punctuation
+• Structuring documents into standard medical formats
+• Flagging unclear or risky medical content for human review
 
 You MUST NOT:
-• Invent medical facts
-• Guess unclear audio
-• Add new diagnoses
-• Change clinical meaning
+• Invent or assume medical facts
+• Guess unclear audio or terminology
+• Add diagnoses, medications, or dosages
+• Change the clinical meaning of the text
+• Provide medical advice
 
-All outputs will be manually reviewed by a human before submission to clients or platforms.
-You must flag uncertainties clearly.
-Medical accuracy and compliance are the top priority.
+Rules:
+• If anything is unclear, mark it as:
+  [UNSURE – VERIFY FROM AUDIO]
+• Do not remove uncertainty flags
+• Maintain professional clinical tone
+• Follow international medical documentation standards
 
-${BRAND_CONTEXT}
+Compliance:
+• All outputs require mandatory human review
+• No auto-submission to any platform
+• This AI is an assistant only, not the final authority
+
+Medical accuracy, safety, and compliance are the top priority.
 `;
 
 export const PROMPTS: Record<PromptType, PromptDefinition> = {
   [PromptType.CLEANUP]: {
     id: PromptType.CLEANUP,
     label: '1. Core Cleanup',
-    description: 'Clean and professionally edit the raw medical transcription draft.',
+    description: 'Correct grammar, punctuation, and medical abbreviations.',
     systemInstruction: MASTER_SYSTEM_PROMPT,
     model: 'gemini-3-flash-preview',
     userPrompt: `Clean and professionally edit the following raw medical transcription draft.
@@ -58,13 +74,21 @@ This transcription is processed internally by Digitex HealthDocs (digitex.health
   },
   [PromptType.STRUCTURED_REPORT]: {
     id: PromptType.STRUCTURED_REPORT,
-    label: '2. Structured Report',
-    description: 'Format cleaned text into a professional clinical document using clear headings.',
+    label: '2. Structured Formatting',
+    description: 'Organize content into professional clinical headings.',
     systemInstruction: MASTER_SYSTEM_PROMPT,
     model: 'gemini-3-flash-preview',
-    userPrompt: `Format the following cleaned medical transcription into a professional clinical document using clear headings.
+    userPrompt: `You are formatting a cleaned medical transcription into a professional clinical document.
 
-Use ONLY relevant headings from the list below (do not invent new sections):
+Instructions:
+• Organize the content into appropriate medical sections
+• Use ONLY information present in the text
+• Do NOT add, infer, or interpret missing data
+• Maintain original clinical meaning and wording
+• Omit sections that are not mentioned
+• Keep formatting simple and professional
+
+Use ONLY the following headings when relevant:
 • Patient Details
 • Chief Complaint
 • History of Present Illness
@@ -78,35 +102,42 @@ Use ONLY relevant headings from the list below (do not invent new sections):
 • Follow-up Instructions
 
 Rules:
-• Maintain original wording wherever possible
-• Do not modify medical intent
-• If a section has no data, omit it
-• Keep formatting simple and professional`
+• Do not invent diagnoses or medications
+• Do not correct [UNSURE – VERIFY FROM AUDIO] flags
+• Do not remove uncertainty markers`
   },
   [PromptType.ERROR_FLAGGING]: {
     id: PromptType.ERROR_FLAGGING,
-    label: '3. Risk Analysis',
-    description: 'Identify items that require human verification (drug names, dosages).',
+    label: '3. Error & Risk Identification',
+    description: 'Identify items requiring human verification (drugs, dosages).',
     systemInstruction: MASTER_SYSTEM_PROMPT,
     model: 'gemini-3-pro-preview',
-    userPrompt: `Review the following medical transcription and identify:
-1. Possible drug names that may be misspelled
-2. Dosages or units that require verification
-3. Any clinically sensitive statements
-4. Any unclear or ambiguous phrases
+    userPrompt: `Review the following medical document and identify items that require human verification.
 
-Do NOT correct automatically.
-Only list items that need HUMAN verification.
+Identify ONLY:
+1. Possible misspelled drug names
+2. Dosages or units that need confirmation
+3. Clinically sensitive or high-risk statements
+4. Ambiguous or unclear phrases
 
-Format your output as:
+Rules:
+• Do NOT correct or rewrite the text
+• Do NOT make assumptions
+• Do NOT add new information
+
+For each issue, provide:
 • Item
 • Reason for concern
-• Suggested action (e.g., recheck audio)`
+• Suggested action (e.g., recheck audio)
+
+Context:
+This is an internal quality assurance step performed by Digitex HealthDocs.
+All findings will be reviewed by a human.`
   },
   [PromptType.DISCHARGE_SUMMARY]: {
     id: PromptType.DISCHARGE_SUMMARY,
     label: '4. Discharge Summary',
-    description: 'Convert medical transcription into a standard hospital discharge summary.',
+    description: 'Standard hospital discharge template conversion.',
     systemInstruction: MASTER_SYSTEM_PROMPT,
     model: 'gemini-3-flash-preview',
     userPrompt: `Convert the following medical transcription into a standard hospital discharge summary.
@@ -130,7 +161,7 @@ Rules:
   [PromptType.OPD_NOTE]: {
     id: PromptType.OPD_NOTE,
     label: '5. OPD/Clinic Note',
-    description: 'Convert transcription into a clear OPD / Clinic Visit Note.',
+    description: 'Concise clinic visit note formatting.',
     systemInstruction: MASTER_SYSTEM_PROMPT,
     model: 'gemini-3-flash-preview',
     userPrompt: `Convert the following transcription into a clear OPD / Clinic Visit Note.
@@ -151,7 +182,7 @@ Rules:
   [PromptType.RADIOLOGY_REPORT]: {
     id: PromptType.RADIOLOGY_REPORT,
     label: '6. Radiology Report',
-    description: 'Clean and format radiology dictations into professional reports.',
+    description: 'Specialized radiology dictation cleaning.',
     systemInstruction: MASTER_SYSTEM_PROMPT,
     model: 'gemini-3-flash-preview',
     userPrompt: `Clean and format the following radiology dictation into a professional radiology report.
@@ -170,7 +201,7 @@ Rules:
   [PromptType.FINAL_VERSION]: {
     id: PromptType.FINAL_VERSION,
     label: '7. Final Polish',
-    description: 'Final draft preparation for manual human review.',
+    description: 'Final preparation for human proofreading.',
     systemInstruction: MASTER_SYSTEM_PROMPT,
     model: 'gemini-3-flash-preview',
     userPrompt: `Prepare the following medical document for final human proofreading and submission.
