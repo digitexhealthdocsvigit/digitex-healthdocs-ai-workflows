@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { PromptType, Case } from './types';
 import { PROMPTS } from './constants';
 import { geminiService } from './geminiService';
@@ -24,6 +24,11 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('hd_dark_mode') === 'true');
   const [showHistory, setShowHistory] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+
+  // --- TTS State ---
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [speechSpeed, setSpeechSpeed] = useState<number>(1);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -59,6 +64,50 @@ const App: React.FC = () => {
       ));
     }
   }, [inputText, outputText, selectedPrompt, isVerified]);
+
+  // --- Flag Scanning ---
+  const flaggedItems = useMemo(() => {
+    if (!outputText) return [];
+    const matches = outputText.match(/\[UNSURE.*?\]/g) || [];
+    return matches;
+  }, [outputText]);
+
+  // --- TTS Logic ---
+  const speak = () => {
+    if (!outputText) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(outputText);
+    utterance.rate = speechSpeed;
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      setIsPaused(false);
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      setIsPaused(false);
+    };
+    utterance.onstart = () => {
+      setIsSpeaking(true);
+      setIsPaused(false);
+    };
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const stopSpeech = () => {
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+    setIsPaused(false);
+  };
+
+  const pauseSpeech = () => {
+    window.speechSynthesis.pause();
+    setIsPaused(true);
+  };
+
+  const resumeSpeech = () => {
+    window.speechSynthesis.resume();
+    setIsPaused(false);
+  };
 
   const createNewCase = () => {
     const newCase: Case = {
@@ -130,6 +179,7 @@ const App: React.FC = () => {
     if (!inputText.trim()) return;
     setIsProcessing(true);
     setOutputText('');
+    stopSpeech(); // Stop any reading before running new analysis
     
     try {
       const promptDef = PROMPTS[selectedPrompt];
@@ -191,7 +241,7 @@ const App: React.FC = () => {
             Case History ({cases.length})
           </button>
           <div className={`h-6 w-px ${isDarkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
-          <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 rounded-lg border border-transparent hover:border-slate-700 transition-all">
+          <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 rounded-lg border border-transparent hover:border-slate-700 transition-all text-xl">
             {isDarkMode ? '🌙' : '☀️'}
           </button>
         </div>
@@ -299,8 +349,70 @@ const App: React.FC = () => {
 
             {/* Output Side */}
             <div className={`flex flex-col p-8 transition-colors ${isDarkMode ? 'bg-slate-900/30' : 'bg-slate-50/50'}`}>
+              {/* Flagged Error Panel */}
+              <div className="mb-4">
+                {flaggedItems.length > 0 ? (
+                  <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-amber-900/10 border-amber-600/30' : 'bg-amber-50 border-amber-200'}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-amber-600 flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse"></span>
+                        {flaggedItems.length} Flagged Review Items
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {flaggedItems.slice(0, 3).map((item, idx) => (
+                        <span key={idx} className="text-[9px] font-mono px-2 py-1 rounded bg-amber-200/50 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300/30 truncate max-w-[150px]">
+                          {item}
+                        </span>
+                      ))}
+                      {flaggedItems.length > 3 && (
+                        <span className="text-[9px] font-bold text-amber-600">+{flaggedItems.length - 3} more</span>
+                      )}
+                    </div>
+                  </div>
+                ) : outputText && !isProcessing && (
+                  <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-green-900/10 border-green-600/30 text-green-400' : 'bg-green-50 border-green-200 text-green-700'} flex items-center gap-3`}>
+                    <svg className="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7"/></svg>
+                    <span className="text-[10px] font-black uppercase tracking-widest">Ready for Verification</span>
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center justify-between mb-4">
                 <label className="text-[10px] font-black uppercase tracking-widest text-indigo-500">Processed Document</label>
+                
+                {/* TTS Controls */}
+                <div className="flex items-center gap-2 bg-slate-200/50 p-1 rounded-xl dark:bg-slate-800">
+                  {!isSpeaking ? (
+                    <button 
+                      onClick={speak} 
+                      disabled={!outputText || isProcessing}
+                      className="p-1.5 rounded-lg text-indigo-600 hover:bg-indigo-100 transition-colors disabled:opacity-30"
+                      title="Read Aloud"
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      {isPaused ? (
+                        <button onClick={resumeSpeech} className="p-1.5 rounded-lg text-green-600 hover:bg-green-100" title="Resume"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+                      ) : (
+                        <button onClick={pauseSpeech} className="p-1.5 rounded-lg text-amber-600 hover:bg-amber-100" title="Pause"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg></button>
+                      )}
+                      <button onClick={stopSpeech} className="p-1.5 rounded-lg text-red-600 hover:bg-red-100" title="Stop"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg></button>
+                    </div>
+                  )}
+                  <select 
+                    value={speechSpeed} 
+                    onChange={(e) => setSpeechSpeed(parseFloat(e.target.value))}
+                    className="bg-transparent text-[9px] font-black uppercase outline-none text-slate-500 cursor-pointer"
+                  >
+                    <option value="0.8">Slow</option>
+                    <option value="1">Normal</option>
+                    <option value="1.4">Fast</option>
+                  </select>
+                </div>
+
                 <div className="flex items-center gap-4">
                    <div className="flex items-center gap-1 bg-slate-200/50 p-0.5 rounded-lg dark:bg-slate-800">
                       {(['normal', 'large', 'xl'] as const).map(z => (
