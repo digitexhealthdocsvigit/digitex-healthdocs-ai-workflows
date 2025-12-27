@@ -1,52 +1,36 @@
-
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { PromptDefinition } from "./types";
 
+const apiKey = process.env.GEMINI_API_KEY;
+
+if (!apiKey) {
+  throw new Error("GEMINI_API_KEY is missing in environment variables");
+}
+
 export class GeminiTranscriptionService {
-  constructor() {}
+  private genAI = new GoogleGenerativeAI(apiKey);
 
-  private getAI() {
-    return new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-  }
+  async generateText(prompt: PromptDefinition, text: string) {
+    const model = this.genAI.getGenerativeModel({
+      model: prompt.model || "gemini-1.5-flash",
+      systemInstruction: prompt.systemInstruction,
+    });
 
-  async *streamTranscription(prompt: PromptDefinition, text: string, audioData?: { data: string, mimeType: string }) {
-    const ai = this.getAI();
-    
-    // Use the native audio model for the first pass if audio is provided
-    const modelName = audioData ? 'gemini-2.5-flash-native-audio-preview-09-2025' : prompt.model;
-
-    try {
-      const parts: any[] = [{ text: `${prompt.userPrompt}\n\nTEXT TO PROCESS:\n${text}` }];
-      
-      if (audioData) {
-        parts.unshift({
-          inlineData: {
-            data: audioData.data,
-            mimeType: audioData.mimeType
-          }
-        });
-      }
-
-      const responseStream = await ai.models.generateContentStream({
-        model: modelName,
-        contents: { parts },
-        config: {
-          systemInstruction: prompt.systemInstruction,
-          temperature: 0.1,
-          topP: 0.95,
-          topK: 40,
+    const result = await model.generateContent({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: `${prompt.userPrompt}\n\n${text}` }],
         },
-      });
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        topP: 0.95,
+        topK: 40,
+      },
+    });
 
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          yield chunk.text;
-        }
-      }
-    } catch (error) {
-      console.error("Streaming error:", error);
-      throw error;
-    }
+    return result.response.text();
   }
 }
 
